@@ -7,10 +7,8 @@ package go_ibm_db
 
 import (
 	"database/sql"
-	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/ibmdb/go_ibm_db/api"
 	trc "github.com/ibmdb/go_ibm_db/log2"
@@ -60,20 +58,7 @@ func (d *Driver) Close() error {
 }
 
 func init() {
-	var cmdStr string = ""
-
-	for e := 0; e < len(os.Args); e++ {
-		cmdStr = cmdStr + os.Args[e]
-	}
-
-	if strings.Contains(cmdStr, "trace") {
-		wordPtr := flag.String("trace", "", "log/trace file name")
-
-		if len(os.Args) > 2 {
-			flag.Parse()
-		}
-		trc.GetPath(*wordPtr, len(os.Args))
-	}
+	trc.GetPath(os.Getenv("GO_IBMDB_TRACE"))
 
 	trc.Trace1("driver.go:init() - ENTRY")
 
