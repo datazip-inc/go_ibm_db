@@ -54,16 +54,18 @@ func utf16toutf8(s []uint16) []byte {
 	return buf
 }
 
-//This func takes []uint8 array and then removes the null
-//and then returns []uint8
-func removeNulls(s []uint8) []uint8 {
-	buf := make([]uint8, len(s))
-	ind := 0
-	for _, v := range s {
-		if v != 0 {
-			buf[ind] = v
-			ind++
-		}
+// dbclobToUTF8 converts a DBCLOB byte slice (UTF-16BE encoded) to UTF-8.
+// DBCLOB columns return data as UTF-16 Big-Endian encoded bytes which must
+// be properly decoded to UTF-8 rather than simply stripping null bytes.
+func dbclobToUTF8(bs []uint8) []byte {
+	// Ensure even number of bytes for UTF-16 pairs
+	if len(bs)%2 != 0 {
+		bs = bs[:len(bs)-1]
 	}
-	return buf
+
+	buf := make([]uint16, len(bs)/2)
+	for i := 0; i < len(buf); i++ {
+		buf[i] = uint16(bs[2*i])<<8 | uint16(bs[2*i+1])
+	}
+	return utf16toutf8(buf)
 }

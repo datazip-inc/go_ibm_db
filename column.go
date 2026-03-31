@@ -201,7 +201,7 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 			return nil, nil
 		}
 		s := (*[1 << 20]uint8)(p)[:len(buf)]
-		return removeNulls(s), nil
+		return dbclobToUTF8(s), nil
 	case api.SQL_C_TYPE_TIMESTAMP:
 		t := (*api.SQL_TIMESTAMP_STRUCT)(p)
 		r := time.Date(int(t.Year), time.Month(t.Month), int(t.Day),
