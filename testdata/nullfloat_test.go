@@ -36,7 +36,7 @@ func NullValueFloat() error {
 	c2 := "test"
 	c3 := int64(10)
 	c4 := true
-	c6 := time.Now()
+	c6 := time.Now().UTC()
 
 	st, err := db.Prepare("Insert into arr(var1,var2,var3,var4,var6) values(?,?,?,?,?)")
 	if err != nil {

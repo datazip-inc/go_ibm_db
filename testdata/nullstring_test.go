@@ -34,7 +34,7 @@ func NullValueString() error {
 	c3 := int64(10)
 	c4 := true
 	c5 := 1.234
-	c6 := time.Now()
+	c6 := time.Now().UTC()
 
 	st, err := db.Prepare("Insert into arr(var1,var3,var4,var5,var6) values(?,?,?,?,?)")
 	if err != nil {
