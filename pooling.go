@@ -11,9 +11,9 @@ import (
 	trc "github.com/ibmdb/go_ibm_db/log2"
 )
 
-// DBP struct type contains the timeout, dbinstance and connection string
+// DBP struct type contains the timeout, dbinstance pointer and connection string
 type DBP struct {
-	sql.DB
+	*sql.DB
 	con string
 	n   time.Duration
 }
@@ -101,7 +101,7 @@ func (p *Pool) Open(connStr string, options ...string) *DBP {
 				val = val[:len(val)-1]
 				p.availablePool[connStr] = val
 				p.usedPool[connStr] = append(p.usedPool[connStr], dbpo)
-				dbpo.SetConnMaxLifetime(Time)
+				dbpo.DB.SetConnMaxLifetime(Time)
 				p.mu.Unlock()
 				return dbpo
 			} else {
@@ -109,7 +109,7 @@ func (p *Pool) Open(connStr string, options ...string) *DBP {
 				dbpo := val[0]
 				p.usedPool[connStr] = append(p.usedPool[connStr], dbpo)
 				delete(p.availablePool, connStr)
-				dbpo.SetConnMaxLifetime(Time)
+				dbpo.DB.SetConnMaxLifetime(Time)
 				p.mu.Unlock()
 				return dbpo
 			}
@@ -119,40 +119,41 @@ func (p *Pool) Open(connStr string, options ...string) *DBP {
 				return nil
 			}
 			dbi := &DBP{
-				DB:  *db,
+				DB:  db,
 				con: connStr,
 				n:   Time,
 			}
 			p.mu.Lock()
 			p.usedPool[connStr] = append(p.usedPool[connStr], dbi)
-			dbi.SetConnMaxLifetime(Time)
+			dbi.DB.SetConnMaxLifetime(Time)
 			p.mu.Unlock()
 			return dbi
 		}
 	} else {
 		pSize = pSize + 1
 
-		for i := 0; i < connMaxLifetime; i++ {
+		timeout := time.Duration(connMaxLifetime) * time.Second
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
 			if len(p.availablePool) <= 0 {
 				time.Sleep(3 * time.Second)
-				i = i + 2
-			} else {
-				if val, ok := p.availablePool[connStr]; ok {
-					if len(val) > 1 {
-						p.mu.Lock()
-						dbpo := val[0]
-						copy(val[0:], val[1:])
-						val[len(val)-1] = nil
-						val = val[:len(val)-1]
-						p.availablePool[connStr] = val
-						p.usedPool[connStr] = append(p.usedPool[connStr], dbpo)
-						dbpo.SetConnMaxLifetime(Time)
-						p.mu.Unlock()
-						return dbpo
-					} else {
-						dbpo := val[0]
-						return dbpo
-					}
+				continue
+			}
+			if val, ok := p.availablePool[connStr]; ok {
+				if len(val) > 1 {
+					p.mu.Lock()
+					dbpo := val[0]
+					copy(val[0:], val[1:])
+					val[len(val)-1] = nil
+					val = val[:len(val)-1]
+					p.availablePool[connStr] = val
+					p.usedPool[connStr] = append(p.usedPool[connStr], dbpo)
+					dbpo.DB.SetConnMaxLifetime(Time)
+					p.mu.Unlock()
+					return dbpo
+				} else {
+					dbpo := val[0]
+					return dbpo
 				}
 			}
 		}
@@ -182,13 +183,13 @@ func (p *Pool) Init(numConn int, connStr string) bool {
 			return false
 		}
 		dbi := &DBP{
-			DB:  *db,
+			DB:  db,
 			con: connStr,
 			n:   Time,
 		}
 		p.mu.Lock()
 		p.availablePool[connStr] = append(p.availablePool[connStr], dbi)
-		dbi.SetConnMaxLifetime(Time)
+		dbi.DB.SetConnMaxLifetime(Time)
 		p.mu.Unlock()
 	}
 	trc.Trace1("pooling.go: Init() - EXIT")
@@ -236,31 +237,29 @@ func (d *DBP) Timeout() {
 
 	var pos int
 	i := -1
-	select {
-	case <-time.After(d.n):
-		b.mu.Lock()
-		if valt, okt := b.availablePool[d.con]; okt {
-			if len(valt) > 1 {
-				for _, b := range valt {
-					i = i + 1
-					if b == d {
-						pos = i
-					}
+	<-time.After(d.n)
+	b.mu.Lock()
+	if valt, okt := b.availablePool[d.con]; okt {
+		if len(valt) > 1 {
+			for _, b := range valt {
+				i = i + 1
+				if b == d {
+					pos = i
 				}
-				dbpt := valt[pos]
-				copy(valt[pos:], valt[pos+1:])
-				valt[len(valt)-1] = nil
-				valt = valt[:len(valt)-1]
-				b.availablePool[d.con] = valt
-				dbpt.DB.Close()
-			} else {
-				dbpt := valt[0]
-				dbpt.DB.Close()
-				delete(b.availablePool, d.con)
 			}
+			dbpt := valt[pos]
+			copy(valt[pos:], valt[pos+1:])
+			valt[len(valt)-1] = nil
+			valt = valt[:len(valt)-1]
+			b.availablePool[d.con] = valt
+			dbpt.DB.Close()
+		} else {
+			dbpt := valt[0]
+			dbpt.DB.Close()
+			delete(b.availablePool, d.con)
 		}
-		b.mu.Unlock()
 	}
+	b.mu.Unlock()
 	trc.Trace1("pooling.go: Timeout() - EXIT")
 }
 

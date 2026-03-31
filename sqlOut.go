@@ -511,14 +511,3 @@ func asBytes(buf []byte, rv reflect.Value) (b []byte, ok bool) {
 	return
 }
 
-// This function is mirrored in the database/sql/driver package.
-func callValuerValue(vr driver.Valuer) (v driver.Value, err error) {
-	trc.Trace1("sqlOut.go: callValuerValue()")
-
-	if rv := reflect.ValueOf(vr); rv.Kind() == reflect.Ptr &&
-		rv.IsNil() &&
-		rv.Type().Elem().Implements(reflect.TypeOf((*driver.Valuer)(nil)).Elem()) {
-		return nil, nil
-	}
-	return vr.Value()
-}
