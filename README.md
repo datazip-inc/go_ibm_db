@@ -26,7 +26,8 @@ yum install go git tar libpam
 
 - **SQL1598N Error** - It is expected in absence of valid db2connect license. Please click [here](#for-zos-and-iseries-connectivity-and-sql1598n-error) and read instructions about license requirement and how to apply the license.
 
-- go_ibm_db@v0.5.1 is the last version to download v11.5.9 clidriver by defualt and first version to support MacOS arm64 platform using v12.1.0 clidriver.
+- go_ibm_db@v0.5.1 is the last version to download v11.5.9 clidriver by default and first version to support MacOS arm64 platform using v12.1.0 clidriver.
+- **It is recommended to use clidriver v12.1.2 or later** as it includes support for DigiCert G5 certificates. See [DigiCert G5 Certificate Migration](#digicert-g5-certificate-migration) section for details.
 - There is no MacOS Intel Chip clidriver from v12.1.0 onwards.
 
 ## How to Install in Windows
@@ -46,7 +47,7 @@ go install github.com/ibmdb/go_ibm_db/installer@v0.5.4
 export IBM_DB_DOWNLOAD_URL=https://public.dhe.ibm.com/ibmdl/export/pub/software/data/db2/drivers/odbc_cli/v11.5.4/macos64_odbc_cli.tar.gz
 ```
 
-- You can instruct go_ibm_db driver to download specific version of clidriver by setting environment variable `CLIDRIVER_DOWNLOAD_VERSION=<version>` before running `setup.go` file. f.e. `export CLIDRIVER_DOWNLOAD_VERSION=v11.5.9`
+- You can instruct go_ibm_db driver to download specific version of clidriver by setting environment variable `CLIDRIVER_DOWNLOAD_VERSION=<version>` before running `setup.go` file. f.e. `export CLIDRIVER_DOWNLOAD_VERSION=v12.1.2`
 
 - If you already have a dsdriver/db2client/db2server or clidriver with include directory available in your system, add the path of the same to your
   PATH windows environment variable.
@@ -585,6 +586,24 @@ connStr = "DATABASE=database;HOSTNAME=hostname;PORT=port;PROTOCOL=TCPIP;UID=user
 ```
 
 > We just need to add **Security=SSL** in connection string to have a secure connection against Db2 server in IBM Cloud.
+
+## <a name="digicert-g5-certificate-migration"></a>DigiCert G5 Certificate Migration
+
+IBM has migrated Db2 SSL certificates from DigiCert G1 to DigiCert G5. If you encounter `SQL30081N` errors related to `sqlccSSLSocketSetup` with protocol specific error code `414` when connecting over SSL to BLUDB, it is likely due to this certificate change.
+
+**Recommended actions:**
+
+1. **Upgrade to clidriver v12.1.2 or later** - This version includes built-in support for DigiCert G5 certificates. Download from: https://public.dhe.ibm.com/ibmdl/export/pub/software/data/db2/drivers/odbc_cli/v12.1.2/
+
+2. **Use the G5 certificate explicitly** - Download the latest DigiCert G5 root certificate (PEM format) from [DigiCert](https://www.digicert.com/kb/digicert-root-certificates.htm) and pass it via the `SSLServerCertificate` connection string keyword:
+
+```
+connStr := "DATABASE=database;HOSTNAME=hostname;PORT=port;Security=SSL;SSLServerCertificate=<path_to_g5_cert.pem>;PROTOCOL=TCPIP;UID=username;PWD=passwd;"
+```
+
+3. As a temporary workaround, you can add `SSLClientHostnameValidation=OFF;` to the connection string, but this is **not recommended for production** as it disables hostname validation.
+
+For more details, see [Preparing for DigiCert G5 Certificate Migration](https://www.ibm.com/support/pages/preparing-digicert-g5-certificate-migration).
 
 **Note:** You can also create a KeyStore DB using GSKit command line tool and use it in connection string along with other keywords as documented in [DB2 Infocenter](http://www.ibm.com/support/knowledgecenter/en/SSEPGG_11.5.0/com.ibm.db2.luw.admin.sec.doc/doc/t0053518.html).
 
