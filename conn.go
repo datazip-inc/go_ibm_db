@@ -7,10 +7,11 @@ package go_ibm_db
 import (
 	"database/sql/driver"
 	"fmt"
-	"github.com/ibmdb/go_ibm_db/api"
-	trc "github.com/ibmdb/go_ibm_db/log2"
 	"runtime"
 	"unsafe"
+
+	"github.com/ibmdb/go_ibm_db/api"
+	trc "github.com/ibmdb/go_ibm_db/log2"
 )
 
 type Conn struct {
@@ -79,8 +80,15 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	h := api.SQLHSTMT(out)
 	drv.Stats.updateHandleCount(api.SQL_HANDLE_STMT, 1)
 	b := api.StringToUTF16(query)
-	ret = api.SQLExecDirect(h,
-		(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
+	if runtime.GOOS == "zos" {
+		// On z/OS, StringToUTF16 does not append null terminator,
+		// so we must pass the exact byte length instead of SQL_NTS
+		ret = api.SQLExecDirect(h,
+			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQLINTEGER(2*len(b)))
+	} else {
+		ret = api.SQLExecDirect(h,
+			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
+	}
 	if IsError(ret) {
 		defer releaseHandle(h)
 		return nil, NewError("SQLExecDirectW", h)

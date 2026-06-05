@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -40,8 +41,15 @@ func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
 	h := api.SQLHSTMT(out)
 	drv.Stats.updateHandleCount(api.SQL_HANDLE_STMT, 1)
 	b := api.StringToUTF16(query)
-	ret = api.SQLPrepare(h,
-		(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
+	if runtime.GOOS == "zos" {
+		// On z/OS, StringToUTF16 does not append null terminator,
+		// so we must pass the exact byte length instead of SQL_NTS
+		ret = api.SQLPrepare(h,
+			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQLINTEGER(2*len(b)))
+	} else {
+		ret = api.SQLPrepare(h,
+			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
+	}
 	if IsError(ret) {
 		defer releaseHandle(h)
 		return nil, NewError("SQLPrepare", h)
