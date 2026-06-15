@@ -6,8 +6,9 @@ package api
 
 import (
 	"fmt"
-	trc "github.com/ibmdb/go_ibm_db/log2"
 	"syscall"
+
+	trc "github.com/ibmdb/go_ibm_db/log2"
 )
 
 const (
@@ -151,6 +152,7 @@ const (
 
 	SQL_IS_UINTEGER = -5
 	SQL_IS_INTEGER  = -6
+	SQL_IS_POINTER  = -4
 
 	// Fetch Orientation in SQLFetchScroll
 	SQL_FETCH_NEXT     = 1

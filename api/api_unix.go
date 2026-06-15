@@ -10,6 +10,7 @@ package api
 
 import (
 	"fmt"
+
 	trc "github.com/ibmdb/go_ibm_db/log2"
 )
 
@@ -146,6 +147,13 @@ const (
 
 	SQL_IS_UINTEGER = C.SQL_IS_UINTEGER
 	SQL_IS_INTEGER  = C.SQL_IS_INTEGER
+	SQL_IS_POINTER  = -4
+
+	SQL_ATTR_ROW_ARRAY_SIZE   = C.SQL_ATTR_ROW_ARRAY_SIZE
+	SQL_ATTR_ROWS_FETCHED_PTR = C.SQL_ATTR_ROWS_FETCHED_PTR
+
+	SQL_POSITION       = C.SQL_POSITION
+	SQL_LOCK_NO_CHANGE = C.SQL_LOCK_NO_CHANGE
 
 	//Connection pooling
 	SQL_ATTR_CONNECTION_POOLING = C.SQL_ATTR_CONNECTION_POOLING
@@ -176,6 +184,8 @@ type (
 
 	SQLLEN  C.SQLLEN
 	SQLULEN C.SQLULEN
+
+	SQLSETPOSIROW C.SQLUSMALLINT
 )
 
 func SQLSetEnvUIntPtrAttr(environmentHandle SQLHENV, attribute SQLINTEGER, valuePtr uintptr, stringLength SQLINTEGER) (ret SQLRETURN) {

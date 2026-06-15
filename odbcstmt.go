@@ -8,7 +8,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -23,10 +22,47 @@ type ODBCStmt struct {
 	h          api.SQLHSTMT
 	Parameters []Parameter
 	Cols       []Column
+	// FetchSize is the SQL_ATTR_ROW_ARRAY_SIZE value applied to this statement.
+	FetchSize int
+	// RowsFetched is heap-allocated so it can be passed to C without triggering
+	// the cgo pointer check (ODBCStmt also contains Parameters []Parameter, a
+	// slice header that is a Go pointer; passing &s.RowsFetched directly would
+	// cause "cgo argument has Go pointer to unpinned Go pointer").
+	RowsFetched *api.SQLULEN
 	// locking/lifetime
 	mu         sync.Mutex
 	usedByStmt bool
 	usedByRows bool
+}
+
+// applyBlockFetch sets SQL_ATTR_ROW_ARRAY_SIZE and SQL_ATTR_ROWS_FETCHED_PTR
+// on the statement handle, enabling array fetch.
+func (s *ODBCStmt) applyBlockFetch(fetchSize int) error {
+	trc.Trace1("odbcstmt.go: applyBlockFetch() - ENTRY")
+
+	s.FetchSize = fetchSize
+	fs := fetchSize
+	if fs <= 0 {
+		fs = 1 // ODBC requires at least 1 row to be fetched.
+	}
+
+	// Heap-allocate RowsFetched so we never pass an interior Go pointer to C.
+	s.RowsFetched = new(api.SQLULEN)
+
+	ret := api.SQLSetStmtAttr(s.h, api.SQL_ATTR_ROW_ARRAY_SIZE,
+		api.SQLPOINTER(uintptr(fs)), api.SQL_IS_UINTEGER)
+	if IsError(ret) {
+		return NewError("SQL_ATTR_ROW_ARRAY_SIZE", s.h)
+	}
+
+	ret = api.SQLSetStmtAttr(s.h, api.SQL_ATTR_ROWS_FETCHED_PTR,
+		api.SQLPOINTER(unsafe.Pointer(s.RowsFetched)), api.SQL_IS_POINTER)
+	if IsError(ret) {
+		return NewError("SQL_ATTR_ROWS_FETCHED_PTR", s.h)
+	}
+
+	trc.Trace1(fmt.Sprintf("odbcstmt.go: applyBlockFetch() FetchSize=%d - EXIT", fs))
+	return nil
 }
 
 func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
@@ -41,15 +77,8 @@ func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
 	h := api.SQLHSTMT(out)
 	drv.Stats.updateHandleCount(api.SQL_HANDLE_STMT, 1)
 	b := api.StringToUTF16(query)
-	if runtime.GOOS == "zos" {
-		// On z/OS, StringToUTF16 does not append null terminator,
-		// so we must pass the exact byte length instead of SQL_NTS
-		ret = api.SQLPrepare(h,
-			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQLINTEGER(2*len(b)))
-	} else {
-		ret = api.SQLPrepare(h,
-			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
-	}
+	ret = api.SQLPrepare(h,
+		(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
 	if IsError(ret) {
 		defer releaseHandle(h)
 		return nil, NewError("SQLPrepare", h)
@@ -60,12 +89,18 @@ func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
 		return nil, err
 	}
 
-	trc.Trace1("odbcstmt.go: PrepareODBCStmt() - EXIT")
-	return &ODBCStmt{
+	s := &ODBCStmt{
 		h:          h,
 		Parameters: ps,
 		usedByStmt: true,
-	}, nil
+	}
+	if err := s.applyBlockFetch(c.fetchSize); err != nil {
+		defer releaseHandle(h)
+		return nil, err
+	}
+
+	trc.Trace1("odbcstmt.go: PrepareODBCStmt() - EXIT")
+	return s, nil
 }
 
 func (s *ODBCStmt) closeByStmt() error {
@@ -231,6 +266,12 @@ func (s *ODBCStmt) Exec(args []driver.Value) error {
 func (s *ODBCStmt) BindColumns() error {
 	trc.Trace1("odbcstmt.go: BindColumns() - ENTRY")
 
+	// Reset RowsFetched to 0 so Next() always calls SQLFetch on the first call
+	// after a new BindColumns
+	if s.RowsFetched != nil {
+		*s.RowsFetched = 0
+	}
+
 	// count columns
 	var n api.SQLSMALLINT
 	ret := api.SQLNumResultCols(s.h, &n)
@@ -240,6 +281,7 @@ func (s *ODBCStmt) BindColumns() error {
 	if n < 1 {
 		return errors.New("Query executed successfully but did not create a result set")
 	}
+
 	// fetch column descriptions
 	s.Cols = make([]Column, n)
 	binding := true
@@ -255,10 +297,12 @@ func (s *ODBCStmt) BindColumns() error {
 		if !binding {
 			continue
 		}
-		bound, err := s.Cols[i].Bind(s.h, i)
+		bound, err := s.Cols[i].Bind(s.h, i, s.FetchSize)
 		if err != nil {
 			return err
 		}
+
+		// TODO: check if we rearrange the columns in the query so that the last columns are non-bindable.
 		if !bound {
 			binding = false
 		}

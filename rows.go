@@ -16,7 +16,8 @@ import (
 )
 
 type Rows struct {
-	os *ODBCStmt
+	os     *ODBCStmt
+	rowIdx int // index of the next row to return within the current rowset
 }
 
 func (r *Rows) Columns() []string {
@@ -129,29 +130,52 @@ func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
 	return dbtype
 }
 
+// Next advances to the next row and fills dest. When array fetch is active
+// (FetchSize > 1), SQLFetch is called only when the current rowset is
+// exhausted, amortising CGO overhead across FetchSize rows.
 func (r *Rows) Next(dest []driver.Value) error {
 	trc.Trace1("rows.go: Next() - ENTRY")
 
-	ret := api.SQLFetch(r.os.h)
-	if ret == api.SQL_NO_DATA {
-		return io.EOF
+	os := r.os
+	rowsFetched := api.SQLULEN(0)
+	if os.RowsFetched != nil {
+		rowsFetched = *os.RowsFetched
 	}
-	if IsError(ret) {
-		return NewError("SQLFetch", r.os.h)
+
+	// Call SQLFetch when we've consumed all rows in the current rowset.
+	if r.rowIdx >= int(rowsFetched) {
+		ret := api.SQLFetch(os.h)
+		if ret == api.SQL_NO_DATA {
+			return io.EOF
+		}
+		if IsError(ret) {
+			return NewError("SQLFetch", os.h)
+		}
+		r.rowIdx = 0
+
+		if os.RowsFetched != nil {
+			rowsFetched = *os.RowsFetched
+		} else {
+			rowsFetched = 1
+		}
 	}
+
+	// Read column values from the already-filled rowset buffer.
 	for i := range dest {
-		v, err := r.os.Cols[i].Value(r.os.h, i)
+		v, err := os.Cols[i].Value(os.h, i, r.rowIdx)
 		if err != nil {
 			return err
 		}
 		dest[i] = v
 	}
+
+	r.rowIdx++
 	trc.Trace1("rows.go: Next() - EXIT")
 	return nil
 }
 
 func (r *Rows) HasNextResultSet() bool {
-	trc.Trace1("rows.go: HasVextResultSet()")
+	trc.Trace1("rows.go: HasNextResultSet()")
 
 	return true
 }
@@ -171,8 +195,14 @@ func (r *Rows) NextResultSet() error {
 	if err != nil {
 		return err
 	}
+	r.rowIdx = 0
 	trc.Trace1("rows.go: NextResultSet() - EXIT")
 	return nil
+}
+
+// FetchSize returns the rowset size applied to this statement's SQL_ATTR_ROW_ARRAY_SIZE.
+func (r *Rows) FetchSize() int {
+	return r.os.FetchSize
 }
 
 func (r *Rows) Close() error {

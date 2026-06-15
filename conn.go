@@ -15,8 +15,19 @@ import (
 )
 
 type Conn struct {
-	h  api.SQLHDBC
-	tx *Tx
+	h         api.SQLHDBC
+	tx        *Tx
+	fetchSize int
+}
+
+// SetFetchSize configures the number of rows returned per SQLFetch call
+// (SQL_ATTR_ROW_ARRAY_SIZE) for all statements on this connection.
+func (c *Conn) SetFetchSize(n int) {
+	if n > 0 {
+		c.fetchSize = n
+	} else {
+		c.fetchSize = 0
+	}
 }
 
 func (d *Driver) Open(dsn string) (driver.Conn, error) {
@@ -62,7 +73,30 @@ func (c *Conn) Close() error {
 	return releaseHandle(h)
 }
 
-// Query method executes the statement with out prepare if no args provided, and a driver.ErrSkip otherwise (handled by sql.go to execute usual preparedStmt)
+// QueryWithArgs prepares the query, binds args, and returns a *Rows ready for
+// ReadBatch. It uses SQLPrepare + SQLBindParameter + SQLExecute, so it works
+// with parameterised queries
+func (c *Conn) QueryWithArgs(query string, args []driver.Value) (*Rows, error) {
+	os, err := c.PrepareODBCStmt(query) // sets SQL_ATTR_ROW_ARRAY_SIZE
+	if err != nil {
+		return nil, err
+	}
+
+	os.usedByStmt = false
+	if err := os.Exec(args); err != nil {
+		os.releaseHandle()
+		return nil, err
+	}
+	if err := os.BindColumns(); err != nil {
+		os.releaseHandle()
+		return nil, err
+	}
+	os.usedByRows = true
+	return &Rows{os: os}, nil
+}
+
+// Query method executes the statement without prepare if no args provided,
+// and returns driver.ErrSkip otherwise (handled by sql.go to use prepared stmt).
 func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	trc.Trace1("conn.go: Query() - ENTRY")
 	trc.Trace1(fmt.Sprintf("query = %s", query))
@@ -79,16 +113,22 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	}
 	h := api.SQLHSTMT(out)
 	drv.Stats.updateHandleCount(api.SQL_HANDLE_STMT, 1)
-	b := api.StringToUTF16(query)
-	if runtime.GOOS == "zos" {
-		// On z/OS, StringToUTF16 does not append null terminator,
-		// so we must pass the exact byte length instead of SQL_NTS
-		ret = api.SQLExecDirect(h,
-			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQLINTEGER(2*len(b)))
-	} else {
-		ret = api.SQLExecDirect(h,
-			(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
+
+	os = &ODBCStmt{
+		h:          h,
+		usedByRows: true,
 	}
+
+	// Apply block fetch before executing so SQL_ATTR_ROW_ARRAY_SIZE is set
+	// before BindColumns allocates per-row column buffers.
+	if err := os.applyBlockFetch(c.fetchSize); err != nil {
+		defer releaseHandle(h)
+		return nil, err
+	}
+
+	b := api.StringToUTF16(query)
+	ret = api.SQLExecDirect(h,
+		(*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
 	if IsError(ret) {
 		defer releaseHandle(h)
 		return nil, NewError("SQLExecDirectW", h)
@@ -98,10 +138,8 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 		defer releaseHandle(h)
 		return nil, err
 	}
-	os = &ODBCStmt{
-		h:          h,
-		Parameters: ps,
-		usedByRows: true}
+	os.Parameters = ps
+
 	err = os.BindColumns()
 	if err != nil {
 		return nil, err

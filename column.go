@@ -33,26 +33,15 @@ func (l *BufferLen) GetData(h api.SQLHSTMT, idx int, ctype api.SQLSMALLINT, buf 
 		(*api.SQLLEN)(l))
 }
 
-func (l *BufferLen) Bind(h api.SQLHSTMT, idx int, ctype api.SQLSMALLINT, buf []byte) api.SQLRETURN {
-	trc.Trace1("column.go: Bind()- ENTRY")
-
-	if len(buf) <= 2147483647 {
-		return api.SQLBindCol(h, api.SQLUSMALLINT(idx+1), ctype,
-			buf, api.SQLLEN(len(buf)),
-			(*api.SQLLEN)(l))
-	}
-	trc.Trace1("column.go: Bind()- EXIT")
-	return api.SQLBindCol(h, api.SQLUSMALLINT(idx+1), ctype,
-		buf, api.SQLLEN(len(buf)-1),
-		(*api.SQLLEN)(l))
-}
-
 // Column provides access to row columns.
 type Column interface {
 	Name() string
 	TypeScan() reflect.Type
-	Bind(h api.SQLHSTMT, idx int) (bool, error)
-	Value(h api.SQLHSTMT, idx int) (driver.Value, error)
+	// fetchSize is the number of rows per SQLFetch call (rowset size).
+	// For array fetch, Bind allocates fetchSize × elementSize bytes and
+	// fetchSize length indicators so the driver can fill all rows at once.
+	Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, error)
+	Value(h api.SQLHSTMT, idx int, rowIdx int) (driver.Value, error)
 }
 
 func describeColumn(h api.SQLHSTMT, idx int, namebuf []uint16) (namelen int, sqltype api.SQLSMALLINT, size api.SQLULEN, ret api.SQLRETURN) {
@@ -128,7 +117,11 @@ func NewColumn(h api.SQLHSTMT, idx int) (Column, error) {
 	case api.SQL_DBCLOB:
 		return NewVariableWidthColumn(b, api.SQL_C_DBCHAR, size), nil
 	case api.SQL_XML:
-		return NewVariableWidthColumn(b, api.SQL_C_BINARY, 31457280), nil
+		// XML has no bounded width. Binding a fixed 30 MB buffer per row would
+		// allocate 30 MB * FetchSize per fetch (multiple GB) and risk OOM, so
+		// fetch it row-by-row via SQLGetData (colWidth 0 -> NonBindableColumn),
+		// which streams arbitrary-length values without a giant pre-allocation.
+		return NewVariableWidthColumn(b, api.SQL_C_BINARY, 0), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type %d", sqltype)
 	}
@@ -158,9 +151,10 @@ func (c *BaseColumn) TypeScan() reflect.Type {
 		return reflect.TypeOf(int64(0))
 	case api.SQL_C_DOUBLE:
 		return reflect.TypeOf(float64(0.0))
-	case api.SQL_C_CHAR, api.SQL_C_WCHAR:
-		if c.SType == api.SQL_DECFLOAT {
-			return reflect.TypeOf(float64(0.0))
+	case api.SQL_C_CHAR, api.SQL_C_WCHAR, api.SQL_C_DBCHAR:
+		// DECIMAL/DECFLOAT are fetched as SQL_C_CHAR text; Value() returns []byte, not float64.
+		if c.SType == api.SQL_DECIMAL || c.SType == api.SQL_DECFLOAT {
+			return reflect.TypeOf([]byte(nil))
 		}
 		return reflect.TypeOf(string(""))
 	case api.SQL_C_TYPE_DATE, api.SQL_C_TYPE_TIME, api.SQL_C_TYPE_TIMESTAMP, api.SQL_C_TYPE_TIMESTAMP_EXT_TZ:
@@ -189,7 +183,7 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 	case api.SQL_C_DOUBLE:
 		return *((*float64)(p)), nil
 	case api.SQL_C_CHAR:
-		if c.SType == api.SQL_DECIMAL {
+		if c.SType == api.SQL_DECIMAL || c.SType == api.SQL_DECFLOAT {
 			return bytes.Replace(buf, []byte(","), []byte("."), 1), nil
 		}
 		return buf, nil
@@ -238,19 +232,19 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 	return nil, fmt.Errorf("unsupported column ctype %d", c.CType)
 }
 
-// BindableColumn allows access to columns that can have their buffers
-// bound. Once bound at start, they are written to by odbc driver every
-// time it fetches new row. This saves on syscall and, perhaps, some
-// buffer copying. BindableColumn can be left unbound, then it behaves
-// like NonBindableColumn when user reads data from it.
+// BindableColumn allows access to columns that can have their buffers bound.
+// When FetchSize > 1 (array fetch), Buffer holds FetchSize×Size bytes and
+// Lens holds one length/indicator per row in the rowset. The driver fills
+// all rows in one SQLFetch call; Value(h, idx, rowIdx) reads the correct slot.
 type BindableColumn struct {
 	*BaseColumn
 	IsBound         bool
 	IsVariableWidth bool
 	Size            int
-	Len             BufferLen
-	Buffer          []byte
-	smallBuf        [8]byte // small inline memory buffer, so we do not need allocate external memory all the time
+	FetchSize       int
+	Lens            []BufferLen // one per row in the rowset
+	Buffer          []byte      // FetchSize * Size bytes
+	smallBuf        [8]byte     // inline buffer used for single-row unbound reads
 }
 
 func NewBindableColumn(b *BaseColumn, ctype api.SQLSMALLINT, bufSize int) *BindableColumn {
@@ -259,12 +253,13 @@ func NewBindableColumn(b *BaseColumn, ctype api.SQLSMALLINT, bufSize int) *Binda
 
 	b.CType = ctype
 	c := &BindableColumn{BaseColumn: b, Size: bufSize}
+	// Allocate a single-row buffer for the unbound/pre-bind fallback path.
 	if c.Size <= len(c.smallBuf) {
-		// use inline buffer
 		c.Buffer = c.smallBuf[:c.Size]
 	} else {
 		c.Buffer = make([]byte, c.Size)
 	}
+	c.Lens = make([]BufferLen, 1)
 	trc.Trace1("column.go: NewBindableColumn() - EXIT")
 	return c
 }
@@ -276,6 +271,9 @@ func NewVariableWidthColumn(b *BaseColumn, ctype api.SQLSMALLINT, colWidth api.S
 		b.CType = ctype
 		return &NonBindableColumn{b}
 	}
+	// TODO: large declared widths (e.g. CLOB(1M+)) allocate fetchSize×width bytes
+	// per bound column and can OOM under block fetch; consider capping bind size
+	// and falling back to NonBindableColumn for oversized LOBs.
 	l := int(colWidth)
 	switch ctype {
 	case api.SQL_C_WCHAR, api.SQL_C_DBCHAR:
@@ -299,11 +297,31 @@ func NewVariableWidthColumn(b *BaseColumn, ctype api.SQLSMALLINT, colWidth api.S
 	return c
 }
 
-func (c *BindableColumn) Bind(h api.SQLHSTMT, idx int) (bool, error) {
+// Bind registers column buffers with the driver for array fetch.
+// fetchSize is the rowset size; the driver writes fetchSize rows per SQLFetch.
+func (c *BindableColumn) Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, error) {
 	trc.Trace1("column.go: Bind() - ENTRY")
-	trc.Trace1(fmt.Sprintf("idx = %d", idx))
+	trc.Trace1(fmt.Sprintf("idx = %d, fetchSize = %d", idx, fetchSize))
 
-	ret := c.Len.Bind(h, idx, c.CType, c.Buffer)
+	if fetchSize <= 0 {
+		fetchSize = 1
+	}
+	c.FetchSize = fetchSize
+
+	// Allocate rowset-sized buffers.
+	c.Lens = make([]BufferLen, fetchSize)
+	if fetchSize == 1 && c.Size <= len(c.smallBuf) {
+		c.Buffer = c.smallBuf[:c.Size]
+	} else {
+		c.Buffer = make([]byte, fetchSize*c.Size)
+	}
+
+	// Register the start of the whole array. The driver uses c.Size as the
+	// per-row stride and writes into Lens[0..fetchSize-1] automatically.
+	bufLen := api.SQLLEN(c.Size)
+	ret := api.SQLBindCol(h, api.SQLUSMALLINT(idx+1), c.CType,
+		c.Buffer, bufLen,
+		(*api.SQLLEN)(&c.Lens[0]))
 	if IsError(ret) {
 		return false, NewError("SQLBindCol", h)
 	}
@@ -312,30 +330,97 @@ func (c *BindableColumn) Bind(h api.SQLHSTMT, idx int) (bool, error) {
 	return true, nil
 }
 
-func (c *BindableColumn) Value(h api.SQLHSTMT, idx int) (driver.Value, error) {
+// Value returns the value for the given rowIdx within the current rowset.
+// rowIdx must be 0 for single-row (FetchSize=1) fetches.
+func (c *BindableColumn) Value(h api.SQLHSTMT, idx int, rowIdx int) (driver.Value, error) {
 	trc.Trace1("column.go: Value() - ENTRY")
-	trc.Trace1(fmt.Sprintf("idx = %d", idx))
+	trc.Trace1(fmt.Sprintf("idx = %d, rowIdx = %d", idx, rowIdx))
 
 	if !c.IsBound {
-		ret := c.Len.GetData(h, idx, c.CType, c.Buffer)
+		// Under block fetch, this column was never bound (it appears after a
+		// NonBindableColumn that stopped the binding chain). The ODBC cursor
+		// may have been advanced to an arbitrary row by a previous column's
+		// SQLGetData / SQLSetPos calls, so we must always re-position before
+		// calling SQLGetData — even for rowIdx 0.
+		//
+		// We use getDataChunked (same helper as NonBindableColumn) so that
+		// values longer than c.Buffer are not silently truncated.
+		ret := api.SQLSetPos(h, api.SQLSETPOSIROW(rowIdx+1), api.SQL_POSITION, api.SQL_LOCK_NO_CHANGE)
 		if IsError(ret) {
+			return nil, NewError("SQLSetPos", h)
+		}
+		total, err := getDataChunked(h, idx, c.CType)
+		if err != nil {
+			return nil, err
+		}
+		if total == nil {
+			return nil, nil // SQL NULL
+		}
+		trc.Trace1("column.go: Value() - EXIT (unbound)")
+		return c.BaseColumn.Value(total)
+	}
+
+	l := c.Lens[rowIdx]
+	if l.IsNull() {
+		return nil, nil
+	}
+	if !c.IsVariableWidth && int(l) != c.Size {
+		panic(fmt.Errorf("wrong column #%d length %d returned, %d expected", idx, l, c.Size))
+	}
+	start := rowIdx * c.Size
+	bufLen := int(l)
+	if bufLen > c.Size {
+		bufLen = c.Size
+	}
+	trc.Trace1("column.go: Value() - EXIT")
+	return c.BaseColumn.Value(c.Buffer[start : start+bufLen])
+}
+
+// getDataChunked reads an arbitrary-length value for column idx from the
+// current ODBC row using SQLGetData, handling SQL_SUCCESS_WITH_INFO (01004)
+// by appending in chunks until the full value is accumulated.
+//
+// Returns (nil, nil) when the value is SQL NULL.
+// Used by both NonBindableColumn and the BindableColumn unbound path so that
+// both paths handle values larger than a single buffer without truncation.
+func getDataChunked(h api.SQLHSTMT, idx int, ctype api.SQLSMALLINT) ([]byte, error) {
+	var l BufferLen
+	var total []byte
+	b := make([]byte, 1024)
+	for {
+		ret := l.GetData(h, idx, ctype, b)
+		switch ret {
+		case api.SQL_SUCCESS:
+			if l.IsNull() {
+				return nil, nil
+			}
+			return append(total, b[:l]...), nil
+		case api.SQL_SUCCESS_WITH_INFO:
+			err := NewError("SQLGetData", h).(*Error)
+			if len(err.Diag) > 0 && err.Diag[0].State != "01004" {
+				return nil, err
+			}
+			i := len(b)
+			switch ctype {
+			case api.SQL_C_WCHAR, api.SQL_C_DBCHAR:
+				i -= 2 // exclude wchar (2-byte) null terminator
+			case api.SQL_C_CHAR:
+				i-- // exclude single-byte null terminator
+			}
+			total = append(total, b[:i]...)
+			if l != api.SQL_NO_TOTAL {
+				// Driver told us the total remaining length; read it in one shot.
+				n := int(l) // remaining bytes
+				n -= i
+				n += 2 // headroom for largest (wchar) null terminator
+				if len(b) < n {
+					b = make([]byte, n)
+				}
+			}
+		default:
 			return nil, NewError("SQLGetData", h)
 		}
 	}
-	if c.Len.IsNull() {
-		// is NULL
-		return nil, nil
-	}
-	if !c.IsVariableWidth && int(c.Len) != c.Size {
-		panic(fmt.Errorf("wrong column #%d length %d returned, %d expected", idx, c.Len, c.Size))
-	}
-	// check buffer len
-	bufferLen := int(c.Len)
-	if len(c.Buffer) < bufferLen {
-		bufferLen = len(c.Buffer)
-	}
-	trc.Trace1("column.go: Value() - EXIT")
-	return c.BaseColumn.Value(c.Buffer[:bufferLen])
 }
 
 // NonBindableColumn provide access to columns, that can't be bound.
@@ -345,52 +430,25 @@ type NonBindableColumn struct {
 	*BaseColumn
 }
 
-func (c *NonBindableColumn) Bind(h api.SQLHSTMT, idx int) (bool, error) {
+func (c *NonBindableColumn) Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, error) {
 	return false, nil
 }
 
-func (c *NonBindableColumn) Value(h api.SQLHSTMT, idx int) (driver.Value, error) {
-	var l BufferLen
-	var total []byte
-	b := make([]byte, 1024)
+func (c *NonBindableColumn) Value(h api.SQLHSTMT, idx int, rowIdx int) (driver.Value, error) {
 	trc.Trace1("column.go: Value() - ENTRY")
-loop:
-	for {
-		ret := l.GetData(h, idx, c.CType, b)
-		switch ret {
-		case api.SQL_SUCCESS:
-			if l.IsNull() {
-				// is NULL
-				return nil, nil
-			}
-			total = append(total, b[:l]...)
-			break loop
-		case api.SQL_SUCCESS_WITH_INFO:
-			err := NewError("SQLGetData", h).(*Error)
-			if len(err.Diag) > 0 && err.Diag[0].State != "01004" {
-				return nil, err
-			}
-			i := len(b)
-			switch c.CType {
-			case api.SQL_C_WCHAR, api.SQL_C_DBCHAR:
-				i -= 2 // remove wchar (2 bytes) null-termination character
-			case api.SQL_C_CHAR:
-				i-- // remove null-termination character
-			}
-			total = append(total, b[:i]...)
-			if l != api.SQL_NO_TOTAL {
-				// odbc gives us a hint about remaining data,
-				// lets get it in one go.
-				n := int(l) // total bytes for our data
-				n -= i      // subtract already received
-				n += 2      // room for biggest (wchar) null-terminator
-				if len(b) < n {
-					b = make([]byte, n)
-				}
-			}
-		default:
-			return nil, NewError("SQLGetData", h)
-		}
+	// ReadBatch processes columns in column-major order (all rows of col N, then
+	// col N+1). A prior column's SQLGetData/SQLSetPos calls may leave the cursor
+	// on an arbitrary row, so always reposition before SQLGetData — even rowIdx 0.
+	ret := api.SQLSetPos(h, api.SQLSETPOSIROW(rowIdx+1), api.SQL_POSITION, api.SQL_LOCK_NO_CHANGE)
+	if IsError(ret) {
+		return nil, NewError("SQLSetPos", h)
+	}
+	total, err := getDataChunked(h, idx, c.CType)
+	if err != nil {
+		return nil, err
+	}
+	if total == nil {
+		return nil, nil // SQL NULL
 	}
 	trc.Trace1("column.go: Value() - EXIT")
 	return c.BaseColumn.Value(total)
