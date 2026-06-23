@@ -98,3 +98,29 @@ func NewError(apiName string, handle interface{}) error {
 	trc.Trace1("error.go: NewError() - EXIT")
 	return err
 }
+
+// diagState reads only the SQLSTATE of the first diagnostic record for a
+// statement handle. It avoids allocating the full message buffer that NewError
+// uses, making it cheap to call inside the chunked-read loop where we only
+// need to distinguish state "01004" (data truncated, keep reading) from other
+// warnings. Returns "" if there are no diagnostic records.
+func diagState(h api.SQLHSTMT) string {
+	var ne api.SQLINTEGER
+	state := make([]uint16, 6) // 5-char SQLSTATE + null terminator
+	var msg [2]uint16          // minimal buffer; we only need the state, not the message
+	msgLen := api.SQLSMALLINT(len(msg))
+	if runtime.GOOS == "zos" {
+		// zos requires the exact byte count rather than element count
+		msgLen = api.SQLSMALLINT(2 * len(msg))
+	}
+	ret := api.SQLGetDiagRec(
+		api.SQL_HANDLE_STMT, api.SQLHANDLE(h), 1,
+		(*api.SQLWCHAR)(unsafe.Pointer(&state[0])), &ne,
+		(*api.SQLWCHAR)(unsafe.Pointer(&msg[0])),
+		msgLen, nil,
+	)
+	if ret == api.SQL_NO_DATA || IsError(ret) {
+		return ""
+	}
+	return api.UTF16ToString(state)
+}

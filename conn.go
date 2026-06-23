@@ -23,11 +23,7 @@ type Conn struct {
 // SetFetchSize configures the number of rows returned per SQLFetch call
 // (SQL_ATTR_ROW_ARRAY_SIZE) for all statements on this connection.
 func (c *Conn) SetFetchSize(n int) {
-	if n > 0 {
-		c.fetchSize = n
-	} else {
-		c.fetchSize = 0
-	}
+	c.fetchSize = max(0, n)
 }
 
 func (d *Driver) Open(dsn string) (driver.Conn, error) {
@@ -77,6 +73,9 @@ func (c *Conn) Close() error {
 // ReadBatch. It uses SQLPrepare + SQLBindParameter + SQLExecute, so it works
 // with parameterised queries
 func (c *Conn) QueryWithArgs(query string, args []driver.Value) (*Rows, error) {
+	trc.Trace1("conn.go: QueryWithArgs() - ENTRY")
+	trc.Trace1(fmt.Sprintf("query = %s", query))
+
 	os, err := c.PrepareODBCStmt(query) // sets SQL_ATTR_ROW_ARRAY_SIZE
 	if err != nil {
 		return nil, err
@@ -92,11 +91,12 @@ func (c *Conn) QueryWithArgs(query string, args []driver.Value) (*Rows, error) {
 		return nil, err
 	}
 	os.usedByRows = true
+
+	trc.Trace1("conn.go: QueryWithArgs() - EXIT")
 	return &Rows{os: os}, nil
 }
 
-// Query method executes the statement without prepare if no args provided,
-// and returns driver.ErrSkip otherwise (handled by sql.go to use prepared stmt).
+// Query method executes the statement with out prepare if no args provided, and a driver.ErrSkip otherwise (handled by sql.go to execute usual preparedStmt)
 func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	trc.Trace1("conn.go: Query() - ENTRY")
 	trc.Trace1(fmt.Sprintf("query = %s", query))

@@ -202,7 +202,7 @@ func (r *Rows) NextResultSet() error {
 
 // FetchSize returns the rowset size applied to this statement's SQL_ATTR_ROW_ARRAY_SIZE.
 func (r *Rows) FetchSize() int {
-	return r.os.FetchSize
+	return max(1, r.os.FetchSize)
 }
 
 func (r *Rows) Close() error {
