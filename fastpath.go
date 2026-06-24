@@ -10,20 +10,26 @@
 //
 //	conn.Raw(func(driverConn interface{}) error {
 //	    c := driverConn.(*goibmdb.Conn)
-//	    dr, _ := c.Query("SELECT a, b, c FROM t", nil)
-//	    defer dr.Close()
-//	    gr := dr.(*goibmdb.Rows)
+//	    c.SetFetchSize(200)
+//	    rows, err := c.QueryWithArgs("SELECT a, b, c FROM t WHERE id > ?", []driver.Value{int64(42)})
+//	    if err != nil { return err }
+//	    defer rows.Close()
 //
 //	    ids   := make([]int64,  200)
 //	    names := make([]string, 200)
 //	    ts    := make([]time.Time, 200)
 //	    nulls := [][]bool{make([]bool, 200), make([]bool, 200), make([]bool, 200)}
 //	    for {
-//	        n, err := gr.ReadBatch([]interface{}{&ids, &names, &ts}, nulls)
-//	        if err == io.EOF { break }
-//	        if err != nil { return err }
-//	        // nulls[c][i] is true when column c, row i is SQL NULL.
-//	        // process ids[:n], names[:n], ts[:n] with null awareness
+//	        n, err := rows.ReadBatch([]interface{}{&ids, &names, &ts}, nulls)
+//	        if n > 0 {
+//	            // process ids[:n], names[:n], ts[:n]; check nulls[c][i] for SQL NULL
+//	        }
+//	        if errors.Is(err, io.EOF) {
+//	            break
+//	        }
+//	        if err != nil {
+//	            return err
+//	        }
 //	    }
 //	    return nil
 //	})
@@ -186,7 +192,7 @@ func fillBindableSlice(bc *BindableColumn, colIdx int, dst interface{}, n int, n
 			copy(cp, bc.Buffer[start:start+dataLen])
 			if bc.SType == api.SQL_DECIMAL || bc.SType == api.SQL_DECFLOAT {
 				// "45,234" → "45.234" in place (same fix as column.go Value).
-				for k := 0; k < dataLen; k++ {
+				for k := range dataLen {
 					if cp[k] == ',' {
 						cp[k] = '.'
 						break
@@ -305,7 +311,7 @@ func fillNonBindableSlice(os *ODBCStmt, colIdx int, col Column, dst interface{},
 // fillNonBindableRows decodes n rows via SQLGetData into dst.
 func fillNonBindableRows[T any](os *ODBCStmt, colIdx int, col Column, dst *[]T, n int, nullMask []bool, zero T, decode func(driver.Value) (T, error)) error {
 	ensureSliceLen(dst, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		v, err := col.Value(os.h, colIdx, i)
 		if err != nil {
 			return err
@@ -331,7 +337,7 @@ func fillNonBindableRows[T any](os *ODBCStmt, colIdx int, col Column, dst *[]T, 
 // nullMask[i] is set when row i is SQL NULL; NULL rows store zeroVal in dst.
 func fillBoundRows[T any](bc *BindableColumn, dst *[]T, n int, nullMask []bool, zeroVal T, decode func(i int) T) {
 	ensureSliceLen(dst, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		isNull := bc.LenBuffer[i].IsNull()
 		if nullMask != nil {
 			nullMask[i] = isNull

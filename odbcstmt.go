@@ -37,11 +37,12 @@ type ODBCStmt struct {
 }
 
 // applyBlockFetch sets SQL_ATTR_ROW_ARRAY_SIZE and SQL_ATTR_ROWS_FETCHED_PTR
-// on the statement handle, enabling array fetch.
-func (s *ODBCStmt) applyBlockFetch(fetchSize int) error {
+// on the statement handle, enabling array fetch. FetchSize is taken from the
+// connection via SetFetchSize; if not set (zero), defaultFetchSize is used.
+func (s *ODBCStmt) applyBlockFetch() error {
 	trc.Trace1("odbcstmt.go: applyBlockFetch() - ENTRY")
 
-	s.FetchSize = max(1, fetchSize)
+	s.FetchSize = max(1, s.FetchSize)
 
 	// Heap-allocate RowsFetched so we never pass an interior Go pointer to C.
 	s.RowsFetched = new(api.SQLULEN)
@@ -96,9 +97,10 @@ func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
 	s := &ODBCStmt{
 		h:          h,
 		Parameters: ps,
+		FetchSize:  c.fetchSize,
 		usedByStmt: true,
 	}
-	if err := s.applyBlockFetch(c.fetchSize); err != nil {
+	if err := s.applyBlockFetch(); err != nil {
 		defer releaseHandle(h)
 		return nil, err
 	}
