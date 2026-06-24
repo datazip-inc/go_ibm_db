@@ -218,11 +218,14 @@ func fillBindableSlice(bc *BindableColumn, colIdx int, dst interface{}, n int, n
 					time.FixedZone("", offset))
 			case api.SQL_C_TYPE_DATE:
 				t := (*api.SQL_DATE_STRUCT)(p)
+				// DB2 DATE carries no timezone. Pin to UTC for machine-independence
+				// and consistency with TIMESTAMP above. Mirrors column.go BaseColumn.Value.
 				return time.Date(int(t.Year), time.Month(t.Month), int(t.Day),
-					0, 0, 0, 0, time.Local)
+					0, 0, 0, 0, time.UTC)
 			case api.SQL_C_TYPE_TIME:
 				t := (*api.SQL_TIME_STRUCT)(p)
-				return time.Date(1, 1, 1, int(t.Hour), int(t.Minute), int(t.Second), 0, time.Local)
+				// Same reasoning as DATE above: pin to UTC for consistency.
+				return time.Date(1, 1, 1, int(t.Hour), int(t.Minute), int(t.Second), 0, time.UTC)
 			default:
 				return time.Time{}
 			}

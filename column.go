@@ -226,17 +226,22 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 		return r, nil
 	case api.SQL_C_TYPE_DATE:
 		t := (*api.SQL_DATE_STRUCT)(p)
+		// DB2 DATE carries no timezone. We pin to UTC (not time.Local) so that
+		// the value is machine-independent and consistent with how TIMESTAMP is
+		// handled above. OLake's dataTypeConverter does not post-process dates,
+		// so whatever location we choose here is what callers see.
 		r := time.Date(int(t.Year), time.Month(t.Month), int(t.Day),
-			0, 0, 0, 0, time.Local)
+			0, 0, 0, 0, time.UTC)
 		return r, nil
 	case api.SQL_C_TYPE_TIME:
 		t := (*api.SQL_TIME_STRUCT)(p)
+		// Same reasoning as DATE above: pin to UTC for consistency.
 		r := time.Date(1, 1, 1,
 			int(t.Hour),
 			int(t.Minute),
 			int(t.Second),
 			0,
-			time.Local)
+			time.UTC)
 		return r, nil
 	case api.SQL_C_BINARY:
 		return buf, nil
