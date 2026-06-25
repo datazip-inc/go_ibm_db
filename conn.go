@@ -23,7 +23,7 @@ type Conn struct {
 // SetFetchSize configures the number of rows returned per SQLFetch call
 // (SQL_ATTR_ROW_ARRAY_SIZE) for all statements on this connection.
 func (c *Conn) SetFetchSize(n int) {
-	c.fetchSize = normalizeFetchSize(n)
+	c.fetchSize = max(1, n)
 }
 
 func (d *Driver) Open(dsn string) (driver.Conn, error) {
@@ -147,9 +147,4 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	}
 	trc.Trace1("conn.go: Query() - EXIT")
 	return &Rows{os: os}, nil
-}
-
-// normalizeFetchSize returns n when n > 0, otherwise 1 (single-row fetch).
-func normalizeFetchSize(n int) int {
-	return max(1, n)
 }

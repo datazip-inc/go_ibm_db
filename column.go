@@ -192,17 +192,14 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 		}
 		return buf, nil
 	case api.SQL_C_WCHAR:
-		// p == nil means buf is empty: the DB value is an empty string, not NULL.
-		// SQL NULL is handled by callers before BaseColumn.Value is ever reached
-		// (getDataChunked returns nil for NULL; BindableColumn.Value checks LenBuffer).
 		if p == nil {
-			return "", nil
+			return nil, nil
 		}
 		s := (*[1 << 20]uint16)(p)[:len(buf)/2]
 		return utf16toutf8(s), nil
 	case api.SQL_C_DBCHAR:
 		if p == nil {
-			return "", nil
+			return nil, nil
 		}
 		s := (*[1 << 20]uint8)(p)[:len(buf)]
 		return dbclobToUTF8(s), nil
@@ -308,8 +305,6 @@ func NewVariableWidthColumn(b *BaseColumn, ctype api.SQLSMALLINT, colWidth api.S
 func (c *BindableColumn) Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, error) {
 	trc.Trace1("column.go: Bind() - ENTRY")
 	trc.Trace1(fmt.Sprintf("idx = %d, fetchSize = %d", idx, fetchSize))
-
-	fetchSize = normalizeFetchSize(fetchSize)
 
 	// Allocate rowset-sized buffers.
 	c.LenBuffer = make([]BufferLen, fetchSize)

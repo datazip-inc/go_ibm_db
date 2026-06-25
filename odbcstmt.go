@@ -35,7 +35,7 @@ type ODBCStmt struct {
 func (s *ODBCStmt) applyBlockFetch(fetchSize int) error {
 	trc.Trace1("odbcstmt.go: applyBlockFetch() - ENTRY")
 
-	s.FetchSize = normalizeFetchSize(fetchSize)
+	s.FetchSize = fetchSize
 
 	// Heap-allocate RowsFetched so we never pass an interior Go pointer to C.
 	s.RowsFetched = new(api.SQLULEN)
