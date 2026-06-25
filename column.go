@@ -416,10 +416,6 @@ func getDataChunked(h api.SQLHSTMT, idx int, ctype api.SQLSMALLINT) ([]byte, err
 			// the value is longer than buf. State "01004" (string data right-
 			// truncated) is the expected signal to keep reading. Any other state
 			// is an unexpected warning and should be treated as an error.
-			//
-			// We use diagState (not NewError) here because this is the hot path
-			// for large LOBs — diagState reads only the SQLSTATE without
-			// allocating the full message buffer that NewError uses.
 			if s := diagState(h); s != "01004" {
 				return nil, NewError("SQLGetData", h)
 			}
