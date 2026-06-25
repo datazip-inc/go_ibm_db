@@ -18,17 +18,12 @@ import (
 )
 
 // TODO(brainman): see if I could use SQLExecDirect anywhere
-
 type ODBCStmt struct {
 	h          api.SQLHSTMT
 	Parameters []Parameter
 	Cols       []Column
 	// FetchSize is the SQL_ATTR_ROW_ARRAY_SIZE value applied to this statement.
-	FetchSize int
-	// RowsFetched is heap-allocated so it can be passed to C without triggering
-	// the cgo pointer check (ODBCStmt also contains Parameters []Parameter, a
-	// slice header that is a Go pointer; passing &s.RowsFetched directly would
-	// cause "cgo argument has Go pointer to unpinned Go pointer").
+	FetchSize   int
 	RowsFetched *api.SQLULEN
 	// locking/lifetime
 	mu         sync.Mutex
@@ -37,12 +32,10 @@ type ODBCStmt struct {
 }
 
 // applyBlockFetch sets SQL_ATTR_ROW_ARRAY_SIZE and SQL_ATTR_ROWS_FETCHED_PTR
-// on the statement handle, enabling array fetch. FetchSize is taken from the
-// connection via SetFetchSize; if not set (zero), defaultFetchSize is used.
-func (s *ODBCStmt) applyBlockFetch() error {
+func (s *ODBCStmt) applyBlockFetch(fetchSize int) error {
 	trc.Trace1("odbcstmt.go: applyBlockFetch() - ENTRY")
 
-	s.FetchSize = max(1, s.FetchSize)
+	s.FetchSize = normalizeFetchSize(fetchSize)
 
 	// Heap-allocate RowsFetched so we never pass an interior Go pointer to C.
 	s.RowsFetched = new(api.SQLULEN)
@@ -97,10 +90,9 @@ func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
 	s := &ODBCStmt{
 		h:          h,
 		Parameters: ps,
-		FetchSize:  c.fetchSize,
 		usedByStmt: true,
 	}
-	if err := s.applyBlockFetch(); err != nil {
+	if err := s.applyBlockFetch(c.fetchSize); err != nil {
 		defer releaseHandle(h)
 		return nil, err
 	}
@@ -284,12 +276,12 @@ func (s *ODBCStmt) BindColumns() error {
 	if IsError(ret) {
 		return NewError("SQLNumResultCols", s.h)
 	}
-	if n < 1 {
+	if int(n) < 1 {
 		return errors.New("Query executed successfully but did not create a result set")
 	}
 
 	// fetch column descriptions
-	s.Cols = make([]Column, n)
+	s.Cols = make([]Column, int(n))
 
 	// Pass 1: build column descriptors without binding, so we know up-front
 	// whether any non-bindable column (CLOB/DBCLOB/XML/LONGVARBINARY) is
@@ -324,18 +316,14 @@ func (s *ODBCStmt) BindColumns() error {
 	// Pass 2: bind columns now that FetchSize is final. Binding stops at the
 	// first non-bindable column (ODBC: SQLGetData may only be called on columns
 	// after the last bound column).
-	binding := true
 	for i := range s.Cols {
-		if !binding {
-			break
-		}
 		bound, err := s.Cols[i].Bind(s.h, i, s.FetchSize)
 		if err != nil {
 			return err
 		}
 		// TODO: check if we rearrange the columns in the query so that the last columns are non-bindable.
 		if !bound {
-			binding = false
+			break
 		}
 	}
 

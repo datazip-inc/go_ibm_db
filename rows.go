@@ -152,12 +152,6 @@ func (r *Rows) Next(dest []driver.Value) error {
 			return NewError("SQLFetch", os.h)
 		}
 		r.rowIdx = 0
-
-		if os.RowsFetched != nil {
-			rowsFetched = *os.RowsFetched
-		} else {
-			rowsFetched = 1
-		}
 	}
 
 	// Read column values from the already-filled rowset buffer.
@@ -202,7 +196,7 @@ func (r *Rows) NextResultSet() error {
 
 // FetchSize returns the rowset size applied to this statement's SQL_ATTR_ROW_ARRAY_SIZE.
 func (r *Rows) FetchSize() int {
-	return max(1, r.os.FetchSize)
+	return normalizeFetchSize(r.os.FetchSize)
 }
 
 func (r *Rows) Close() error {

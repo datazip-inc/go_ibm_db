@@ -22,7 +22,6 @@ import (
 // #cgo darwin LDFLAGS: -ldb2
 // #cgo linux LDFLAGS: -ldb2
 // #include <sqlcli1.h>
-// #include <sqlext.h>
 import "C"
 
 func SQLAllocHandle(handleType SQLSMALLINT, inputHandle SQLHANDLE, outputHandle *SQLHANDLE) (ret SQLRETURN) {
@@ -150,17 +149,6 @@ func SQLFreeHandle(handleType SQLSMALLINT, handle SQLHANDLE) (ret SQLRETURN) {
 
 	trc.Trace1(fmt.Sprintf("r = %d", r))
 	trc.Trace1("api/zapi_unix.go SQLFreeHandle() - EXIT")
-	return SQLRETURN(r)
-}
-
-func SQLSetPos(statementHandle SQLHSTMT, rowNumber SQLSETPOSIROW, operation SQLUSMALLINT, lockType SQLUSMALLINT) (ret SQLRETURN) {
-	trc.Trace1("api/zapi_unix.go SQLSetPos() - ENTRY")
-	trc.Trace1(fmt.Sprintf("rowNumber=%d, operation=%d, lockType=%d", rowNumber, operation, lockType))
-
-	r := C.SQLSetPos(C.SQLHSTMT(statementHandle), C.SQLSETPOSIROW(rowNumber), C.SQLUSMALLINT(operation), C.SQLUSMALLINT(lockType))
-
-	trc.Trace1(fmt.Sprintf("r = %d", r))
-	trc.Trace1("api/zapi_unix.go SQLSetPos() - EXIT")
 	return SQLRETURN(r)
 }
 

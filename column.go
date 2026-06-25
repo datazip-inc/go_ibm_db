@@ -41,7 +41,6 @@ type Column interface {
 	// For array fetch, Bind allocates fetchSize × elementSize bytes and
 	// fetchSize length indicators so the driver can fill all rows at once.
 	Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, error)
-	// rowIdx is the 0-based index within the current rowset (0 for single-row fetch).
 	Value(h api.SQLHSTMT, idx int, rowIdx int) (driver.Value, error)
 }
 
@@ -124,10 +123,6 @@ func NewColumn(h api.SQLHSTMT, idx int) (Column, error) {
 		// NonBindableColumn to avoid fetchSize×width OOM
 		return NewVariableWidthColumn(b, api.SQL_C_DBCHAR, 0), nil
 	case api.SQL_XML:
-		// XML has no bounded width. Binding a fixed 30 MB buffer per row would
-		// allocate 30 MB * FetchSize per fetch (multiple GB) and risk OOM, so
-		// fetch it row-by-row via SQLGetData (colWidth 0 -> NonBindableColumn),
-		// which streams arbitrary-length values without a giant pre-allocation.
 		return NewVariableWidthColumn(b, api.SQL_C_BINARY, 0), nil
 	default:
 		return nil, fmt.Errorf("unsupported column type %d", sqltype)
@@ -226,22 +221,17 @@ func (c *BaseColumn) Value(buf []byte) (driver.Value, error) {
 		return r, nil
 	case api.SQL_C_TYPE_DATE:
 		t := (*api.SQL_DATE_STRUCT)(p)
-		// DB2 DATE carries no timezone. We pin to UTC (not time.Local) so that
-		// the value is machine-independent and consistent with how TIMESTAMP is
-		// handled above. OLake's dataTypeConverter does not post-process dates,
-		// so whatever location we choose here is what callers see.
 		r := time.Date(int(t.Year), time.Month(t.Month), int(t.Day),
-			0, 0, 0, 0, time.UTC)
+			0, 0, 0, 0, time.Local)
 		return r, nil
 	case api.SQL_C_TYPE_TIME:
 		t := (*api.SQL_TIME_STRUCT)(p)
-		// Same reasoning as DATE above: pin to UTC for consistency.
 		r := time.Date(1, 1, 1,
 			int(t.Hour),
 			int(t.Minute),
 			int(t.Second),
 			0,
-			time.UTC)
+			time.Local)
 		return r, nil
 	case api.SQL_C_BINARY:
 		return buf, nil
@@ -319,9 +309,7 @@ func (c *BindableColumn) Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, err
 	trc.Trace1("column.go: Bind() - ENTRY")
 	trc.Trace1(fmt.Sprintf("idx = %d, fetchSize = %d", idx, fetchSize))
 
-	if fetchSize <= 0 {
-		fetchSize = 1
-	}
+	fetchSize = normalizeFetchSize(fetchSize)
 
 	// Allocate rowset-sized buffers.
 	c.LenBuffer = make([]BufferLen, fetchSize)
