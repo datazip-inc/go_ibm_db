@@ -96,7 +96,7 @@ func (c *Conn) QueryWithArgs(query string, args []driver.Value) (*Rows, error) {
 	return &Rows{os: os}, nil
 }
 
-/ Query method executes the statement with out prepare if no args provided, and a driver.ErrSkip otherwise (handled by sql.go to execute usual preparedStmt)
+// Query method executes the statement with out prepare if no args provided, and a driver.ErrSkip otherwise (handled by sql.go to execute usual preparedStmt)
 func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	trc.Trace1("conn.go: Query() - ENTRY")
 	trc.Trace1(fmt.Sprintf("query = %s", query))
