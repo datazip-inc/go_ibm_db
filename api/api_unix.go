@@ -181,8 +181,6 @@ type (
 
 	SQLLEN  C.SQLLEN
 	SQLULEN C.SQLULEN
-
-	SQLSETPOSIROW C.SQLUSMALLINT
 )
 
 func SQLSetEnvUIntPtrAttr(environmentHandle SQLHENV, attribute SQLINTEGER, valuePtr uintptr, stringLength SQLINTEGER) (ret SQLRETURN) {
