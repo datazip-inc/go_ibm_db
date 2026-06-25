@@ -120,8 +120,6 @@ func (r *Rows) ReadBatch(dst []interface{}, nulls [][]bool) (n int, err error) {
 	return n, nil
 }
 
-// ─── helpers ────────────────────────────────────────────────────────────────
-
 // fillBindableSlice decodes all n rows for one bound column into a slice.
 // nullMask[i] is set to true when row i is SQL NULL; the typed slice stores
 // a zero-value for those rows. Callers must check nullMask to distinguish
@@ -239,10 +237,7 @@ func fillBindableSlice(bc *BindableColumn, colIdx int, dst interface{}, n int, n
 // fillNonBindableSlice fills n rows from a non-bindable column using SQLGetData
 // row by row. Truly non-bindable types (CLOB/BLOB/XML) land here by design.
 // Bindable-by-type columns that follow a non-bindable column in the result set
-// also land here because binding stops at the first non-bindable column (ODBC
-// restriction: SQLGetData may only be called on columns after the last bound
-// column). Their col.Value() returns the native Go type, so we handle every
-// type that buildColBuffers may allocate.
+// also land here because binding stops at the first non-bindable column.
 func fillNonBindableSlice(os *ODBCStmt, colIdx int, col Column, dst interface{}, n int, nullMask []bool) error {
 	switch d := dst.(type) {
 	case *[]string:
