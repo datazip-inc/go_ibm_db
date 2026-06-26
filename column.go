@@ -330,16 +330,16 @@ func (c *BindableColumn) Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, err
 
 // Value returns the value for the given rowIdx within the current rowset.
 // rowIdx must be 0 for single-row (FetchSize=1) fetches.
-func (c *BindableColumn) Value(h api.SQLHSTMT, idx int, rowIdx int) (driver.Value, error) {
+func (c *BindableColumn) Value(h api.SQLHSTMT, colIdx int, rowIdx int) (driver.Value, error) {
 	trc.Trace1("column.go: Value() - ENTRY")
-	trc.Trace1(fmt.Sprintf("idx = %d, rowIdx = %d", idx, rowIdx))
+	trc.Trace1(fmt.Sprintf("idx = %d, rowIdx = %d", colIdx, rowIdx))
 
 	if !c.IsBound {
 		// This column was never bound (it appears after a NonBindableColumn
 		// that stopped the binding chain). BindColumns forces FetchSize=1 when
 		// any non-bindable column is present, so rowIdx is always 0 and the
 		// cursor is already on the correct row after SQLFetch.
-		total, err := getDataChunked(h, idx, c.CType)
+		total, err := getDataChunked(h, colIdx, c.CType)
 		if err != nil {
 			return nil, err
 		}
@@ -443,12 +443,12 @@ func (c *NonBindableColumn) Bind(h api.SQLHSTMT, idx int, fetchSize int) (bool, 
 	return false, nil
 }
 
-func (c *NonBindableColumn) Value(h api.SQLHSTMT, idx int, rowIdx int) (driver.Value, error) {
+func (c *NonBindableColumn) Value(h api.SQLHSTMT, colIdx int, rowIdx int) (driver.Value, error) {
 	trc.Trace1("column.go: Value() - ENTRY")
 	// BindColumns forces FetchSize=1 when any non-bindable column is present,
 	// so rowIdx is always 0 and the cursor is already on the correct row after
 	// SQLFetch.
-	total, err := getDataChunked(h, idx, c.CType)
+	total, err := getDataChunked(h, colIdx, c.CType)
 	if err != nil {
 		return nil, err
 	}

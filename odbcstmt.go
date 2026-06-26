@@ -276,12 +276,12 @@ func (s *ODBCStmt) BindColumns() error {
 	if IsError(ret) {
 		return NewError("SQLNumResultCols", s.h)
 	}
-	if int(n) < 1 {
+	if n < 1 {
 		return errors.New("Query executed successfully but did not create a result set")
 	}
 
 	// fetch column descriptions
-	s.Cols = make([]Column, int(n))
+	s.Cols = make([]Column, n)
 
 	// Pass 1: build column descriptors without binding, so we know up-front
 	// whether any non-bindable column (CLOB/DBCLOB/XML/LONGVARBINARY) is
