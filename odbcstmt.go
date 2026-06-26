@@ -18,15 +18,42 @@ import (
 )
 
 // TODO(brainman): see if I could use SQLExecDirect anywhere
-
 type ODBCStmt struct {
 	h          api.SQLHSTMT
 	Parameters []Parameter
 	Cols       []Column
+	// FetchSize is the SQL_ATTR_ROW_ARRAY_SIZE value applied to this statement.
+	FetchSize   int
+	RowsFetched *api.SQLULEN
 	// locking/lifetime
 	mu         sync.Mutex
 	usedByStmt bool
 	usedByRows bool
+}
+
+// applyBlockFetch sets SQL_ATTR_ROW_ARRAY_SIZE and SQL_ATTR_ROWS_FETCHED_PTR
+func (s *ODBCStmt) applyBlockFetch(fetchSize int) error {
+	trc.Trace1("odbcstmt.go: applyBlockFetch() - ENTRY")
+
+	s.FetchSize = fetchSize
+
+	// Heap-allocate RowsFetched so we never pass an interior Go pointer to C.
+	s.RowsFetched = new(api.SQLULEN)
+
+	ret := api.SQLSetStmtAttr(s.h, api.SQL_ATTR_ROW_ARRAY_SIZE,
+		api.SQLPOINTER(uintptr(s.FetchSize)), api.SQL_IS_UINTEGER)
+	if IsError(ret) {
+		return NewError("SQL_ATTR_ROW_ARRAY_SIZE", s.h)
+	}
+
+	ret = api.SQLSetStmtAttr(s.h, api.SQL_ATTR_ROWS_FETCHED_PTR,
+		api.SQLPOINTER(unsafe.Pointer(s.RowsFetched)), api.SQL_IS_POINTER)
+	if IsError(ret) {
+		return NewError("SQL_ATTR_ROWS_FETCHED_PTR", s.h)
+	}
+
+	trc.Trace1(fmt.Sprintf("odbcstmt.go: applyBlockFetch() FetchSize=%d - EXIT", s.FetchSize))
+	return nil
 }
 
 func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
@@ -60,12 +87,18 @@ func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
 		return nil, err
 	}
 
-	trc.Trace1("odbcstmt.go: PrepareODBCStmt() - EXIT")
-	return &ODBCStmt{
+	s := &ODBCStmt{
 		h:          h,
 		Parameters: ps,
 		usedByStmt: true,
-	}, nil
+	}
+	if err := s.applyBlockFetch(c.fetchSize); err != nil {
+		defer releaseHandle(h)
+		return nil, err
+	}
+
+	trc.Trace1("odbcstmt.go: PrepareODBCStmt() - EXIT")
+	return s, nil
 }
 
 func (s *ODBCStmt) closeByStmt() error {
@@ -231,6 +264,12 @@ func (s *ODBCStmt) Exec(args []driver.Value) error {
 func (s *ODBCStmt) BindColumns() error {
 	trc.Trace1("odbcstmt.go: BindColumns() - ENTRY")
 
+	// Reset RowsFetched to 0 so Next() always calls SQLFetch on the first call
+	// after a new BindColumns
+	if s.RowsFetched != nil {
+		*s.RowsFetched = 0
+	}
+
 	// count columns
 	var n api.SQLSMALLINT
 	ret := api.SQLNumResultCols(s.h, &n)
@@ -240,29 +279,54 @@ func (s *ODBCStmt) BindColumns() error {
 	if n < 1 {
 		return errors.New("Query executed successfully but did not create a result set")
 	}
+
 	// fetch column descriptions
 	s.Cols = make([]Column, n)
-	binding := true
+
+	// Pass 1: build column descriptors without binding, so we know up-front
+	// whether any non-bindable column (CLOB/DBCLOB/XML/LONGVARBINARY) is
+	// present. DB2 CLI rejects SQLSetPos (HY109) on result sets that contain
+	// LOB columns when SQL_ATTR_ROW_ARRAY_SIZE > 1, so we must set FetchSize=1
+	// before allocating any column buffers. This avoids allocating 200× the
+	// needed buffer space for the bindable columns that precede the LOB.
+	hasNonBindable := false
 	for i := range s.Cols {
 		c, err := NewColumn(s.h, i)
 		if err != nil {
 			return err
 		}
 		s.Cols[i] = c
-		// Once we found one non-bindable column, we will not bind the rest.
-		// http://www.easysoft.com/developer/languages/c/odbc-tutorial-fetching-results.html
-		// ... One common restriction is that SQLGetData may only be called on columns after the last bound column. ...
-		if !binding {
-			continue
+		if _, isNonBindable := c.(*NonBindableColumn); isNonBindable {
+			hasNonBindable = true
 		}
-		bound, err := s.Cols[i].Bind(s.h, i)
+	}
+
+	// If any column is non-bindable, downgrade to FetchSize=1 before binding
+	// so that column buffers are allocated at the correct (smaller) size.
+	if hasNonBindable && s.FetchSize > 1 {
+		trc.Trace1("odbcstmt.go: BindColumns() - non-bindable columns detected, resetting FetchSize to 1")
+		s.FetchSize = 1
+		ret := api.SQLSetStmtAttr(s.h, api.SQL_ATTR_ROW_ARRAY_SIZE,
+			api.SQLPOINTER(uintptr(1)), api.SQL_IS_UINTEGER)
+		if IsError(ret) {
+			return NewError("SQL_ATTR_ROW_ARRAY_SIZE reset", s.h)
+		}
+	}
+
+	// Pass 2: bind columns now that FetchSize is final. Binding stops at the
+	// first non-bindable column (ODBC: SQLGetData may only be called on columns
+	// after the last bound column).
+	for i := range s.Cols {
+		bound, err := s.Cols[i].Bind(s.h, i, s.FetchSize)
 		if err != nil {
 			return err
 		}
+		// TODO: check if we rearrange the columns in the query so that the last columns are non-bindable.
 		if !bound {
-			binding = false
+			break
 		}
 	}
+
 	trc.Trace1("odbcstmt.go: BindColumns() - EXIT")
 	return nil
 }

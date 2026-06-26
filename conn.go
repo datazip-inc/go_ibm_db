@@ -15,8 +15,15 @@ import (
 )
 
 type Conn struct {
-	h  api.SQLHDBC
-	tx *Tx
+	h         api.SQLHDBC
+	tx        *Tx
+	fetchSize int
+}
+
+// SetFetchSize configures the number of rows returned per SQLFetch call
+// (SQL_ATTR_ROW_ARRAY_SIZE) for all statements on this connection.
+func (c *Conn) SetFetchSize(n int) {
+	c.fetchSize = max(1, n)
 }
 
 func (d *Driver) Open(dsn string) (driver.Conn, error) {
@@ -46,7 +53,7 @@ func (d *Driver) Open(dsn string) (driver.Conn, error) {
 		return nil, NewError("SQLDriverConnect", h)
 	}
 	trc.Trace1("conn.go: Open() - EXIT")
-	return &Conn{h: h}, nil
+	return &Conn{h: h, fetchSize: 1}, nil
 }
 
 func (c *Conn) Close() error {
@@ -60,6 +67,33 @@ func (c *Conn) Close() error {
 	c.h = api.SQLHDBC(api.SQL_NULL_HDBC)
 	trc.Trace1("conn.go: Close() - EXIT")
 	return releaseHandle(h)
+}
+
+// QueryBatch prepares the query, binds args, and returns a *Rows ready for
+// ReadBatch. It uses SQLPrepare + SQLBindParameter + SQLExecute, so it works
+// with both parameterised and non-parameterised queries.
+func (c *Conn) QueryBatch(query string, args []driver.Value) (*Rows, error) {
+	trc.Trace1("conn.go: QueryBatch() - ENTRY")
+	trc.Trace1(fmt.Sprintf("query = %s", query))
+
+	os, err := c.PrepareODBCStmt(query)
+	if err != nil {
+		return nil, err
+	}
+
+	os.usedByStmt = false
+	if err := os.Exec(args); err != nil {
+		os.releaseHandle()
+		return nil, err
+	}
+	if err := os.BindColumns(); err != nil {
+		os.releaseHandle()
+		return nil, err
+	}
+	os.usedByRows = true
+
+	trc.Trace1("conn.go: QueryBatch() - EXIT")
+	return &Rows{os: os}, nil
 }
 
 // Query method executes the statement with out prepare if no args provided, and a driver.ErrSkip otherwise (handled by sql.go to execute usual preparedStmt)
@@ -101,7 +135,12 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	os = &ODBCStmt{
 		h:          h,
 		Parameters: ps,
-		usedByRows: true}
+		usedByRows: true,
+	}
+	if err := os.applyBlockFetch(c.fetchSize); err != nil {
+		defer releaseHandle(h)
+		return nil, err
+	}
 	err = os.BindColumns()
 	if err != nil {
 		return nil, err
