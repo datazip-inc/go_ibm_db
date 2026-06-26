@@ -53,7 +53,7 @@ func (d *Driver) Open(dsn string) (driver.Conn, error) {
 		return nil, NewError("SQLDriverConnect", h)
 	}
 	trc.Trace1("conn.go: Open() - EXIT")
-	return &Conn{h: h}, nil
+	return &Conn{h: h, fetchSize: 1}, nil
 }
 
 func (c *Conn) Close() error {
