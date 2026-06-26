@@ -11,7 +11,7 @@
 //	conn.Raw(func(driverConn interface{}) error {
 //	    c := driverConn.(*goibmdb.Conn)
 //	    c.SetFetchSize(200)
-//	    rows, err := c.QueryWithArgs("SELECT a, b, c FROM t WHERE id > ?", []driver.Value{int64(42)})
+//	    rows, err := c.QueryBatch("SELECT a, b, c FROM t WHERE id > ?", []driver.Value{int64(42)})
 //	    if err != nil { return err }
 //	    defer rows.Close()
 //

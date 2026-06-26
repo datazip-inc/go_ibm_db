@@ -69,11 +69,11 @@ func (c *Conn) Close() error {
 	return releaseHandle(h)
 }
 
-// QueryWithArgs prepares the query, binds args, and returns a *Rows ready for
+// QueryBatch prepares the query, binds args, and returns a *Rows ready for
 // ReadBatch. It uses SQLPrepare + SQLBindParameter + SQLExecute, so it works
 // with both parameterised and non-parameterised queries.
-func (c *Conn) QueryWithArgs(query string, args []driver.Value) (*Rows, error) {
-	trc.Trace1("conn.go: QueryWithArgs() - ENTRY")
+func (c *Conn) QueryBatch(query string, args []driver.Value) (*Rows, error) {
+	trc.Trace1("conn.go: QueryBatch() - ENTRY")
 	trc.Trace1(fmt.Sprintf("query = %s", query))
 
 	os, err := c.PrepareODBCStmt(query)
@@ -92,7 +92,7 @@ func (c *Conn) QueryWithArgs(query string, args []driver.Value) (*Rows, error) {
 	}
 	os.usedByRows = true
 
-	trc.Trace1("conn.go: QueryWithArgs() - EXIT")
+	trc.Trace1("conn.go: QueryBatch() - EXIT")
 	return &Rows{os: os}, nil
 }
 
